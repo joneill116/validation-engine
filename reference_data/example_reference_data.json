@@ -1,0 +1,38 @@
+{
+  "comment": "Example reference data for validation rules. Replace with your domain-specific data.",
+  
+  "valid_statuses": [
+    "active",
+    "inactive",
+    "pending",
+    "archived"
+  ],
+  
+  "valid_priorities": [
+    "low",
+    "medium",
+    "high",
+    "critical"
+  ],
+  
+  "valid_categories": [
+    "category_a",
+    "category_b",
+    "category_c"
+  ],
+  
+  "allowed_regions": [
+    "north",
+    "south",
+    "east",
+    "west",
+    "central"
+  ],
+  
+  "supported_formats": [
+    "json",
+    "xml",
+    "csv",
+    "yaml"
+  ]
+}

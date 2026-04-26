@@ -1,108 +1,144 @@
 """
-Domain-Agnostic Validation Engine.
+Validation Engine — a generic, configurable data quality framework.
 
-High-performance, configuration-driven validation library with
-pluggable rules, strategies, caching, and observability hooks.
+Central contract::
 
-Basic Usage:
-    from validation_engine import ValidationEngine, SeverityGateStrategy
-    from my_rules import MyRule
-    
+    ValidationRequest
+        -> ValidationEngine
+        -> RuleResult
+        -> ValidationFinding
+        -> ValidationSummary
+        -> ValidationDecision
+        -> ValidationResult
+
+Quick-start::
+
+    from validation_engine import (
+        ValidationEngine, ValidationRequest,
+        load_ruleset, RulesetCompiler,
+    )
+
+    ruleset_config = load_ruleset("path/to/your/ruleset.yaml")
+    compiled = RulesetCompiler().compile(ruleset_config)
+
     engine = ValidationEngine(
-        rules=[MyRule()],
-        strategy=SeverityGateStrategy(
-            publish_target="valid_queue",
-            exception_target="invalid_queue",
-        ),
-    )
-    
-    decision = engine.validate(
-        payload={"entities": [...]},
-        entity_type="record",
-        ruleset_id="standard:v1",
+        rules=list(compiled.rules),
+        strategy=compiled.strategy,
+        reference_data=compiled.reference_data,
     )
 
-Advanced Features:
-    # Enable caching for performance
-    engine = ValidationEngine(
-        rules=rules,
-        strategy=strategy,
-        enable_cache=True,
-        cache_size=50000,
+    request = ValidationRequest(
+        request_id="REQ-001",
+        tenant_id="<your_tenant>",
+        data_product_id="<your_data_product>",
+        data_flow_id="<your_data_flow>",
+        entity_type="<your_entity_type>",
+        ruleset_id="<your_ruleset_id>",
+        ruleset_version="v1",
+        payload=payload,
     )
-    
-    # Add observability hooks
-    engine.hooks.on_validation_complete(
-        lambda e: print(f"Completed in {e.duration_ms}ms")
-    )
-    
-    # Get cache statistics
-    stats = engine.get_cache_stats()
+
+    result = engine.validate(request)
+    print(result.status.value, result.decision.action.value, result.summary.failed_count)
+
+The framework is fully domain-agnostic. Domain-specific rule classes
+should live in the consuming application and be plugged in via
+``RuleFactory.register_class(rule_type, RuleClass)``.
 """
 
-# ── core engine ──────────────────────────────────────────────────────────────
-from .engine.engine import ValidationEngine
-from .engine.registry import RuleRegistry, StrategyRegistry
-from .engine.context import EvaluationContext
-from .engine.hooks import (
-    ValidationHooks,
-    ValidationEvent,
-    ValidationStartEvent,
-    ValidationCompleteEvent,
-    ValidationErrorEvent,
-    RuleExecutionEvent,
-    EntityProcessedEvent,
+# core engine + context
+from .core.engine import ValidationEngine, PayloadValidationError
+from .core.context import EvaluationContext
+
+# models — input/output contract
+from .models.enums import (
+    Category,
+    DecisionAction,
+    RuleExecutionStatus,
+    Scope,
+    Severity,
+    ValidationStatus,
 )
-from .engine.cache import RuleCache
-from .engine.validation import PayloadValidationError
+from .models.request import ValidationRequest
+from .models.finding import ValidationFinding
+from .models.rule_result import RuleResult
+from .models.summary import ValidationSummary
+from .models.decision import ValidationDecision
+from .models.error import ValidationError
+from .models.partition_decision import PartitionDecision
+from .models.result import ValidationResult
 
-# ── contracts ─────────────────────────────────────────────────────────────────
-from .contracts.enums import Severity, Scope, Category, Disposition, ActionType
-from .contracts.findings import Finding
-from .contracts.results import FieldResult, EntityResult, CollectionResult
-from .contracts.actions import Action, StrategyDecision
+# rule authoring
+from .rules.base import Rule
+from .rules.configured import ConfiguredRule
 
-# ── rule authoring ────────────────────────────────────────────────────────────
-from .rules.base import Rule, make_finding
-
-# ── built-in strategies ───────────────────────────────────────────────────────
-from .strategies.base import PublishStrategy
+# strategies
+from .strategies.base import PerPartitionStrategy, PublishStrategy
+from .strategies.partitioned import PartitionBy, PartitionedStrategy, PartitionFn
 from .strategies.severity_gate import SeverityGateStrategy
-from .strategies.field_partition import FieldPartitionStrategy
-from .strategies.strict import StrictStrategy
 
-__version__ = "1.0.0"
+# config layer
+from .config.schema import (
+    ReferenceDataRef,
+    RuleConfig,
+    RulesetConfig,
+    StrategyConfig,
+)
+from .config.loader import ConfigLoader, ConfigLoadError, load_ruleset
+from .config.factory import RuleFactory
+from .config.compiler import CompiledRuleset, RulesetCompiler
+
+# registries
+from .registries.rule_registry import RuleRegistry
+from .registries.strategy_registry import StrategyRegistry
+
+__version__ = "2.0.0"
 
 __all__ = [
-    # engine
+    # core
     "ValidationEngine",
-    "RuleRegistry",
-    "StrategyRegistry",
     "EvaluationContext",
-    # hooks and observability
-    "ValidationHooks",
-    "ValidationEvent",
-    "ValidationStartEvent",
-    "ValidationCompleteEvent",
-    "ValidationErrorEvent",
-    "RuleExecutionEvent",
-    "EntityProcessedEvent",
-    # cache
-    "RuleCache",
-    # validation
     "PayloadValidationError",
-    # contracts
-    "Severity", "Scope", "Category", "Disposition", "ActionType",
-    "Finding",
-    "FieldResult", "EntityResult", "CollectionResult",
-    "Action", "StrategyDecision",
+    # enums
+    "Severity",
+    "Scope",
+    "Category",
+    "ValidationStatus",
+    "RuleExecutionStatus",
+    "DecisionAction",
+    # models
+    "ValidationRequest",
+    "ValidationFinding",
+    "RuleResult",
+    "ValidationSummary",
+    "ValidationDecision",
+    "PartitionDecision",
+    "ValidationError",
+    "ValidationResult",
     # rules
-    "Rule", "make_finding",
+    "Rule",
+    "ConfiguredRule",
     # strategies
     "PublishStrategy",
+    "PerPartitionStrategy",
     "SeverityGateStrategy",
-    "FieldPartitionStrategy",
-    "StrictStrategy",
-    # metadata
+    "PartitionedStrategy",
+    "PartitionBy",
+    "PartitionFn",
+    # config
+    "RuleConfig",
+    "RulesetConfig",
+    "StrategyConfig",
+    "ReferenceDataRef",
+    "ConfigLoader",
+    "ConfigLoadError",
+    "load_ruleset",
+    "RuleFactory",
+    "RulesetCompiler",
+    "CompiledRuleset",
+    # registries
+    "RuleRegistry",
+    "StrategyRegistry",
+    # version
     "__version__",
 ]

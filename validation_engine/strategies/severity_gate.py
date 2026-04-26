@@ -1,107 +1,114 @@
-import copy
-from types import MappingProxyType
-from ..contracts.enums import Severity, ActionType, Disposition
-from ..contracts.actions import Action, StrategyDecision
-from ..contracts.results import CollectionResult
+"""
+SeverityGateStrategy — default decision strategy.
+
+Maps run signals to a ``ValidationDecision`` using these rules:
+
+  - any errors        -> HALT (or ROUTE_TO_EXCEPTION, configurable)
+  - blocking findings -> ROUTE_TO_EXCEPTION (or QUARANTINE, configurable)
+  - warnings only     -> PUBLISH_WITH_WARNINGS
+  - none of the above -> PUBLISH
+
+Both ``on_blocking`` and ``on_error`` are validated at construction.
+"""
+from __future__ import annotations
+
+from typing import Iterable
+
+from ..models.decision import ValidationDecision
+from ..models.enums import Severity
+from ..models.error import ValidationError
+from ..models.finding import ValidationFinding
+from ..models.summary import ValidationSummary
+
+
+_VALID_ON_BLOCKING = {"route_to_exception", "quarantine"}
+_VALID_ON_ERROR = {"halt", "route_to_exception"}
 
 
 class SeverityGateStrategy:
-    """
-    Whole-entity gate based on severity_max.
-
-    - INFO / WARNING  → PUBLISH (warnings included as tags in payload)
-    - BLOCKING        → RAISE_EXCEPTION to exception_target
-    - FATAL           → RAISE_EXCEPTION to urgent_target
-    - Any BLOCKING/FATAL collection finding → HOLD entire batch
-
-    Targets are logical identifiers (topic names, queue names, etc.).
-    The caller decides what to do with each action.
-    """
-
     strategy_id = "severity_gate"
-    version = "1.0"
 
     def __init__(
         self,
-        publish_target: str,
-        exception_target: str,
-        urgent_target: str | None = None,
+        publish_target: str = "publish",
+        quarantine_target: str = "quarantine",
+        exception_target: str = "exception",
+        warnings_target: str | None = None,
+        on_blocking: str = "route_to_exception",
+        on_error: str = "halt",
     ) -> None:
+        if on_blocking not in _VALID_ON_BLOCKING:
+            raise ValueError(
+                f"on_blocking must be one of {sorted(_VALID_ON_BLOCKING)}, got {on_blocking!r}"
+            )
+        if on_error not in _VALID_ON_ERROR:
+            raise ValueError(
+                f"on_error must be one of {sorted(_VALID_ON_ERROR)}, got {on_error!r}"
+            )
         self.publish_target = publish_target
+        self.quarantine_target = quarantine_target
         self.exception_target = exception_target
-        self.urgent_target = urgent_target or exception_target
+        self.warnings_target = warnings_target or publish_target
+        self.on_blocking = on_blocking
+        self.on_error = on_error
 
-    def decide(self, result: CollectionResult) -> StrategyDecision:
-        collection_blockers = [
-            f for f in result.collection_findings
-            if not f.passed and f.severity in (Severity.BLOCKING, Severity.FATAL)
-        ]
-
-        if collection_blockers:
-            actions = [
-                Action(
-                    action_type=ActionType.HOLD,
-                    entity_ref=e.entity_ref,
-                    payload=MappingProxyType({"entity": self._flatten_good(e)}),
+    def decide(
+        self,
+        findings: Iterable[ValidationFinding],
+        errors: Iterable[ValidationError],
+        summary: ValidationSummary,  # noqa: ARG002  protocol param; not consulted here
+    ) -> ValidationDecision:
+        errors = tuple(errors)
+        if errors:
+            triggered_by = _ordered_unique(e.rule_id or e.error_type for e in errors)
+            if self.on_error == "route_to_exception":
+                return ValidationDecision.route_to_exception(
                     target=self.exception_target,
-                    rationale=f"Collection rule failed: {collection_blockers[0].rule_id}",
+                    triggered_by=triggered_by,
+                    reason=f"{len(errors)} rule execution error(s)",
                 )
-                for e in result.entities
-            ]
-            return StrategyDecision(
-                strategy_id=self.strategy_id,
-                strategy_version=self.version,
-                actions=tuple(actions),
-                summary=MappingProxyType({"held": len(actions), "reason": "collection_failure"}),
+            return ValidationDecision.halt(
+                target=self.exception_target,
+                triggered_by=triggered_by,
+                reason=f"{len(errors)} rule execution error(s)",
             )
 
-        actions: list[Action] = []
-        counts: dict[str, int] = {"publish": 0, "exception": 0, "urgent": 0}
+        findings = tuple(findings)
+        blocking = [
+            f for f in findings
+            if not f.passed and f.severity in (Severity.BLOCKING, Severity.FATAL)
+        ]
+        if blocking:
+            triggered_by = _ordered_unique(f.rule_id for f in blocking)
+            if self.on_blocking == "quarantine":
+                return ValidationDecision.quarantine(
+                    target=self.quarantine_target,
+                    triggered_by=triggered_by,
+                    reason=f"{len(blocking)} blocking finding(s)",
+                )
+            return ValidationDecision.route_to_exception(
+                target=self.exception_target,
+                triggered_by=triggered_by,
+                reason=f"{len(blocking)} blocking finding(s)",
+            )
 
-        for e in result.entities:
-            sev = e.severity_max
-            # Deep copy values to prevent nested mutation bugs
-            all_fields = {**{k: copy.deepcopy(v.value) for k, v in e.good},
-                          **{k: copy.deepcopy(v.value) for k, v in e.bad}}
+        warnings = [
+            f for f in findings
+            if not f.passed and f.severity == Severity.WARNING
+        ]
+        if warnings:
+            return ValidationDecision.publish_with_warnings(
+                target=self.warnings_target,
+                triggered_by=_ordered_unique(f.rule_id for f in warnings),
+                reason=f"{len(warnings)} warning(s) — publish allowed",
+            )
 
-            if sev == Severity.FATAL:
-                actions.append(Action(
-                    action_type=ActionType.RAISE_EXCEPTION,
-                    entity_ref=e.entity_ref,
-                    payload=MappingProxyType({"entity": all_fields, "failures": [copy.deepcopy(f.__dict__) for f in e.all_failures()]}),
-                    target=self.urgent_target,
-                    rationale="Fatal severity — urgent stewardship required",
-                ))
-                counts["urgent"] += 1
-
-            elif sev == Severity.BLOCKING:
-                actions.append(Action(
-                    action_type=ActionType.RAISE_EXCEPTION,
-                    entity_ref=e.entity_ref,
-                    payload=MappingProxyType({"entity": all_fields, "failures": [copy.deepcopy(f.__dict__) for f in e.all_failures()]}),
-                    target=self.exception_target,
-                    rationale="Blocking failures — stewardship required",
-                ))
-                counts["exception"] += 1
-
-            else:
-                actions.append(Action(
-                    action_type=ActionType.PUBLISH,
-                    entity_ref=e.entity_ref,
-                    payload=MappingProxyType({"entity": all_fields, "warnings": [copy.deepcopy(f.__dict__) for f in e.warnings()]}),
-                    target=self.publish_target,
-                    rationale=f"Max severity {sev.value} — publishable",
-                ))
-                counts["publish"] += 1
-
-        return StrategyDecision(
-            strategy_id=self.strategy_id,
-            strategy_version=self.version,
-            actions=tuple(actions),
-            summary=MappingProxyType(counts),
+        return ValidationDecision.publish(
+            target=self.publish_target,
+            reason="No failed findings",
         )
 
-    @staticmethod
-    def _flatten_good(e) -> dict:
-        """Extract good field values from tuple structure with deep copy."""
-        return {k: copy.deepcopy(v.value) for k, v in e.good}
+
+def _ordered_unique(items: Iterable[str]) -> tuple[str, ...]:
+    """Preserve first-seen order while de-duplicating (dict preserves insertion order)."""
+    return tuple(dict.fromkeys(items))

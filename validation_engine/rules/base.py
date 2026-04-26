@@ -1,50 +1,92 @@
-from typing import Any, Protocol, runtime_checkable
-from ..contracts.enums import Severity, Scope, Category
-from ..contracts.findings import Finding
-from ..engine.context import EvaluationContext
+"""
+Rule base class.
+
+A Rule is a callable object the engine executes against a target. The
+target shape depends on the rule's scope:
+
+  - FIELD scope      -> target is the field value
+  - ENTITY scope     -> target is the full entity dict
+  - COLLECTION scope -> target is the list of entity dicts
+
+Rules return either a single ``ValidationFinding`` or an iterable of
+them. The engine wraps the rule's execution in a ``RuleResult``
+capturing status, timing, and the findings produced.
+"""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import Any, Iterable, Mapping
+
+from ..core.context import EvaluationContext
+from ..models.enums import Category, Scope, Severity
+from ..models.finding import ValidationFinding
 
 
-@runtime_checkable
-class Rule(Protocol):
+class Rule(ABC):
     """
-    Protocol every rule must satisfy.
+    Abstract base class for rules.
 
-    - field_path: only used by FIELD-scope rules.
-      Set to the specific field name (e.g. "country_of_risk") or "*" to run
-      against every field.
-    - applies_to: set of entity_type strings this rule covers, or {"*"} for all.
+    Subclasses set the class-level metadata (or pass it through
+    ``__init__``) and implement ``evaluate``. Rules MUST be deterministic
+    given (target, context) so audit trails are reproducible.
+
+    Attributes:
+        rule_id: Stable identifier (used for traceability).
+        rule_version: Version of the rule (audit trail).
+        scope: FIELD / ENTITY / COLLECTION.
+        severity: Severity assigned to non-passing findings.
+        category: Functional category.
+        field_path: For FIELD-scope rules, the field this rule targets.
+            Use ``"*"`` to match every field on the entity.
+        applies_to: Entity types this rule covers. Use ``frozenset({"*"})``
+            for all.
     """
-    rule_id: str
-    scope: Scope
-    severity: Severity
-    category: Category
-    field_path: str          # required; ignored for ENTITY/COLLECTION scope rules
-    applies_to: set[str]
 
-    def evaluate(self, target: Any, ctx: EvaluationContext) -> Finding: ...
+    rule_id: str = "rule"
+    rule_version: str = "1.0"
+    scope: Scope = Scope.FIELD
+    severity: Severity = Severity.BLOCKING
+    category: Category = Category.STRUCTURAL
+    field_path: str = "*"
+    # frozenset prevents accidental sharing/mutation across subclasses.
+    applies_to: frozenset[str] = frozenset({"*"})
 
+    @abstractmethod
+    def evaluate(
+        self, target: Any, ctx: EvaluationContext
+    ) -> ValidationFinding | Iterable[ValidationFinding]:
+        """Evaluate the rule against ``target``."""
 
-def make_finding(
-    rule: Rule,
-    passed: bool,
-    message: str,
-    field_path: str | None = None,
-    expected: Any = None,
-    actual: Any = None,
-    involved_fields: tuple[str, ...] = (),
-    affected_entity_refs: tuple[str, ...] = (),
-) -> Finding:
-    """Convenience constructor so rule authors don't repeat boilerplate."""
-    return Finding(
-        rule_id=rule.rule_id,
-        scope=rule.scope,
-        severity=rule.severity,
-        category=rule.category,
-        passed=passed,
-        message=message,
-        field_path=field_path,
-        expected=expected,
-        actual=actual,
-        involved_fields=involved_fields,
-        affected_entity_refs=affected_entity_refs,
-    )
+    # ------------------------------------------------------------------
+
+    def make_finding(
+        self,
+        passed: bool,
+        message: str,
+        *,
+        field_path: str | None = None,
+        expected: Any = None,
+        actual: Any = None,
+        evidence: Mapping[str, Any] | None = None,
+        involved_fields: Iterable[str] = (),
+        entity_ref: Mapping[str, Any] | None = None,
+        severity: Severity | None = None,
+    ) -> ValidationFinding:
+        """Convenience constructor for findings produced by this rule."""
+        resolved_field_path = field_path
+        if resolved_field_path is None and self.scope is Scope.FIELD and self.field_path != "*":
+            resolved_field_path = self.field_path
+        return ValidationFinding(
+            rule_id=self.rule_id,
+            rule_version=self.rule_version,
+            severity=severity or self.severity,
+            category=self.category,
+            passed=passed,
+            message=message,
+            field_path=resolved_field_path,
+            expected=expected,
+            actual=actual,
+            evidence=evidence,
+            involved_fields=tuple(involved_fields),
+            entity_ref=entity_ref,
+        )

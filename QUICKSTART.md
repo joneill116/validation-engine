@@ -1,248 +1,287 @@
-# Quick Start Guide
+# Quick Start
 
-## Run in 60 Seconds
+The validation engine turns a `ValidationRequest` into a
+`ValidationResult` carrying findings, rule results, summary, and a
+platform decision (publish, quarantine, route to exception, halt, ...).
 
-### 1. Create a rule
-
-```python
-from validation_engine import Rule, Severity, Scope, Category, make_finding
-
-class RequiredFieldRule:
-    rule_id = "required_field"
-    scope = Scope.FIELD
-    severity = Severity.BLOCKING
-    category = Category.COMPLETENESS
-    field_path = "name"
-    applies_to = {"*"}
-    
-    def evaluate(self, target, ctx):
-        passed = target is not None and target != ""
-        return make_finding(
-            self,
-            passed=passed,
-            message="Field is required" if not passed else "OK",
-            field_path=self.field_path,
-            actual=target,
-        )
+```text
+ValidationRequest
+    -> ValidationEngine
+    -> RuleResult
+    -> ValidationFinding
+    -> ValidationSummary
+    -> ValidationDecision
+    -> ValidationResult
 ```
 
-### 2. Create engine and validate
+The framework is **fully domain-agnostic**: entity types, field names,
+rule ids, partition keys, ruleset ids and decision targets are all
+opaque strings supplied by the caller. The framework attaches no
+meaning to any of them. Domain-specific rules are written by
+*consumers* of the framework, not packaged inside it.
+
+## Preferred API — config-driven
+
+Define rules in YAML, compile them, send a `ValidationRequest`.
 
 ```python
-from validation_engine import ValidationEngine, SeverityGateStrategy
+from validation_engine import (
+    RulesetCompiler,
+    ValidationEngine,
+    ValidationRequest,
+    load_ruleset,
+)
+
+ruleset_config = load_ruleset("path/to/your/ruleset.yaml")
+compiled = RulesetCompiler().compile(ruleset_config)
 
 engine = ValidationEngine(
-    rules=[RequiredFieldRule()],
+    rules=list(compiled.rules),
+    strategy=compiled.strategy,
+    reference_data=compiled.reference_data,
+)
+
+request = ValidationRequest(
+    request_id="REQ-001",
+    tenant_id="<your_tenant>",
+    data_product_id="<your_data_product>",
+    data_flow_id="<your_data_flow>",
+    entity_type="<your_entity_type>",
+    ruleset_id="<your_ruleset_id>",
+    ruleset_version="v1",
+    payload={"entities": [
+        {"entity_ref": {"id": "1"}, "fields": {"some_field": "value"}},
+        # ...
+    ]},
+)
+
+result = engine.validate(request)
+
+print(result.status.value)            # 'passed' / 'passed_with_warnings' / 'failed' / 'error'
+print(result.summary.as_dict())       # {'total_findings': ..., 'pass_rate': ...}
+print(result.decision.action.value)   # 'publish' / 'quarantine' / 'route_to_exception' / ...
+
+for finding in result.failed_findings():
+    print(finding.rule_id, finding.message, dict(finding.entity_ref))
+```
+
+(`ValidationStatus` and `DecisionAction` are `str` enums, so direct
+comparisons work: `if result.status == "passed": ...`.)
+
+## YAML rule example
+
+```yaml
+ruleset_id: <your_ruleset_id>
+ruleset_version: v1
+entity_type: <your_entity_type>
+
+strategy:
+  strategy_type: severity_gate
+  params:
+    publish_target: topic.publish
+    exception_target: topic.exception
+    quarantine_target: topic.quarantine
+
+rules:
+  - rule_id: <your.rule.required.field_a>
+    rule_type: required
+    severity: blocking
+    field_path: field_a
+
+  - rule_id: <your.rule.enum.field_b>
+    rule_type: enum
+    severity: blocking
+    field_path: field_b
+    params:
+      values: [VALUE_X, VALUE_Y]
+
+  - rule_id: <your.rule.regex.field_c>
+    rule_type: regex
+    severity: blocking
+    field_path: field_c
+    params:
+      pattern: "^[A-Z]{3}$"
+```
+
+### Standard rule types
+
+| `rule_type`             | Scope       | Purpose                                    |
+| ----------------------- | ----------- | ------------------------------------------ |
+| `required`              | entity      | Field key is present                       |
+| `not_null`              | field       | Field value is non-null/non-blank          |
+| `enum`                  | field       | Value is in an allowed set                 |
+| `range`                 | field       | Numeric within `[min, max]`                |
+| `regex`                 | field       | Matches a regular expression               |
+| `comparison`            | entity      | Compare two fields (`eq`, `gte`, ...)      |
+| `date_between`          | field       | Date in inclusive window (or ref window)   |
+| `unique`                | collection  | Field/key combination is unique            |
+| `conditional_required`  | entity      | Field required when precondition matches   |
+| `sum_equals`            | collection  | Total of a field equals a target           |
+
+For anything more complex than these standard types, write a Python
+rule (subclass `ConfiguredRule` or implement the `Rule` interface) in
+your application code and register it with `RuleFactory`.
+
+## Programmatic API (no YAML)
+
+```python
+from validation_engine import (
+    Rule, Scope, Severity, Category,
+    ValidationEngine, ValidationRequest, SeverityGateStrategy,
+)
+
+
+class MyAllowedValuesRule(Rule):
+    rule_id = "my.rule.allowed_values"
+    scope = Scope.FIELD
+    severity = Severity.BLOCKING
+    category = Category.STRUCTURAL
+    field_path = "some_field"
+    applies_to = frozenset({"<your_entity_type>"})
+
+    def evaluate(self, target, ctx):
+        ok = target in {"A", "B", "C"}
+        return self.make_finding(
+            passed=ok,
+            message=f"{target!r} not allowed" if not ok else "ok",
+            actual=target,
+        )
+
+
+engine = ValidationEngine(
+    rules=[MyAllowedValuesRule()],
     strategy=SeverityGateStrategy(
-        publish_target="valid_queue",
-        exception_target="invalid_queue",
+        publish_target="topic.publish",
+        exception_target="topic.exception",
     ),
 )
 
-payload = {
-    "entities": [
-        {
-            "entity_ref": {"id": "1"},
-            "fields": {"name": "John"},
-        },
-    ]
-}
+result = engine.validate(ValidationRequest(
+    entity_type="<your_entity_type>",
+    ruleset_id="rs1",
+    payload={"entities": [
+        {"entity_ref": {"id": "1"}, "fields": {"some_field": "Z"}},
+    ]},
+))
+```
 
-decision = engine.validate(
-    payload=payload,
-    entity_type="record",
-    ruleset_id="v1",
+### Plugging in your own rule types
+
+If you need a domain-specific rule, write the class in your application
+code and register it once at startup so YAML configs can reference it
+by `rule_type`:
+
+```python
+from validation_engine import RuleFactory, RulesetCompiler
+
+factory = RuleFactory()
+factory.register_class("my_custom_type", MyCustomRule)
+compiler = RulesetCompiler(rule_factory=factory)
+```
+
+## Per-partition routing
+
+By default the strategy decides for the whole batch — one bad record
+sends everything to the exception target. To route each record (or
+each value of any key you choose) independently, **wrap the strategy**
+with `PartitionedStrategy`:
+
+```python
+from validation_engine import PartitionedStrategy, PartitionBy, SeverityGateStrategy
+
+strategy = PartitionedStrategy(
+    inner=SeverityGateStrategy(
+        publish_target="topic.publish",
+        exception_target="topic.exception",
+    ),
+    # Pick any key from your entity_ref — the framework treats it as opaque.
+    partition_by=PartitionBy.entity_ref("<your_group_key>"),
 )
-
-print(decision.summary)
 ```
 
-### 3. Done! 🎉
-
-See [example_rules.py](example_rules.py) for complete examples.
-
-## Common Patterns
-
-### Enumeration Check
+After validation, `result.partition_decisions` holds one
+`PartitionDecision` per partition. Clean partitions publish; partitions
+with blocking findings route to exception:
 
 ```python
-class StatusRule:
-    rule_id = "status_check"
-    scope = Scope.FIELD
-    severity = Severity.WARNING
-    field_path = "status"
-    applies_to = {"*"}
-    
-    def evaluate(self, target, ctx):
-        valid = ["active", "inactive", "pending"]
-        passed = target in valid
-        return make_finding(
-            self,
-            passed=passed,
-            message=f"Invalid status: {target}",
-            field_path=self.field_path,
-            expected=valid,
-            actual=target,
-        )
+for pd in result.partition_decisions:
+    print(pd.dimension, pd.key, pd.action.value, pd.entity_count, pd.failed_count)
 ```
 
-### Range Check
+`result.decision` (run-level) signals "needs attention" if *any*
+partition needs it — useful as an orchestration signal.
+
+### Multi-key partitions (tuples)
+
+Combine partitioners to slice across two or more dimensions:
 
 ```python
-class AgeRule:
-    rule_id = "age_range"
-    scope = Scope.FIELD
-    severity = Severity.WARNING
-    field_path = "age"
-    applies_to = {"*"}
-    
-    def evaluate(self, target, ctx):
-        passed = 0 <= target <= 120
-        return make_finding(
-            self,
-            passed=passed,
-            message=f"Age {target} out of range [0-120]",
-            field_path=self.field_path,
-            actual=target,
-        )
-```
-
-### Format Check (Regex)
-
-```python
-import re
-
-class EmailRule:
-    rule_id = "email_format"
-    scope = Scope.FIELD
-    severity = Severity.BLOCKING
-    field_path = "email"
-    applies_to = {"*"}
-    
-    def __init__(self):
-        self.pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
-    
-    def evaluate(self, target, ctx):
-        passed = bool(self.pattern.match(str(target)))
-        return make_finding(
-            self,
-            passed=passed,
-            message=f"Invalid email format: {target}",
-            field_path=self.field_path,
-            actual=target,
-        )
-```
-
-### Cross-Field Check (Entity Scope)
-
-```python
-class ConsistencyRule:
-    rule_id = "start_end_consistency"
-    scope = Scope.ENTITY
-    severity = Severity.WARNING
-    field_path = "*"
-    applies_to = {"*"}
-    
-    def evaluate(self, target, ctx):
-        fields = target.get("fields", {})
-        start = fields.get("start_date")
-        end = fields.get("end_date")
-        
-        passed = start <= end if (start and end) else True
-        return make_finding(
-            self,
-            passed=passed,
-            message="start_date must be before end_date",
-            involved_fields=("start_date", "end_date"),
-        )
-```
-
-### Collection-Level Check
-
-```python
-class UniquenessRule:
-    rule_id = "unique_id"
-    scope = Scope.COLLECTION
-    severity = Severity.BLOCKING
-    field_path = "*"
-    applies_to = {"*"}
-    
-    def evaluate(self, target, ctx):
-        ids = [e["fields"].get("id") for e in target]
-        duplicates = [i for i in ids if ids.count(i) > 1]
-        
-        passed = len(set(duplicates)) == 0
-        return make_finding(
-            self,
-            passed=passed,
-            message=f"Duplicate IDs found: {set(duplicates)}",
-        )
-```
-
-## Advanced Features
-
-### Enable Caching
-
-```python
-engine = ValidationEngine(
-    rules=rules,
-    strategy=strategy,
-    enable_cache=True,
-    cache_size=50000,  # 50K entries
+partition_by=PartitionBy.combine(
+    PartitionBy.entity_ref("<key_a>"),
+    PartitionBy.field("<key_b>"),
 )
-
-# 50x faster for repeated validations
-stats = engine.get_cache_stats()
-print(f"Hit rate: {stats['hit_rate_percent']}%")
+# pd.key would be a 2-tuple: (<value_of_key_a>, <value_of_key_b>)
 ```
 
-### Add Observability
+### Built-in partitioners
 
-```python
-from validation_engine import ValidationHooks
+| Helper | Key derived from |
+| --- | --- |
+| `PartitionBy.entity_ref(name)` | `entity.entity_ref[name]` |
+| `PartitionBy.field(name)` | `entity.fields[name]` (supports the `{value: …}` rich shape) |
+| `PartitionBy.field_path()` | the field path that produced the finding |
+| `PartitionBy.combine(p1, p2, ...)` | concatenated tuple of keys (multi-dimensional) |
+| `PartitionBy.custom(fn)` | whatever your callable returns |
 
-hooks = ValidationHooks()
-hooks.on_validation_start(lambda e: print(f"Started: {e.entity_type}"))
-hooks.on_validation_complete(lambda e: print(f"Completed in {e.duration_ms}ms"))
-hooks.on_validation_error(lambda e: print(f"Error: {e.error}"))
+The framework attaches no meaning to the key names you choose. Whether
+the key is a row id, a tenant id, a category code, a hash bucket, or
+anything else is the caller's call.
 
-engine = ValidationEngine(rules=rules, strategy=strategy, hooks=hooks)
+### YAML form
+
+```yaml
+strategy:
+  strategy_type: partitioned
+  params:
+    # Any of these forms work; the framework just reads the key value.
+    partition_by: entity_ref.<your_key>           # single key
+    # partition_by: [entity_ref.<key_a>, fields.<key_b>]   # multi-key tuple
+    inner:
+      strategy_type: severity_gate
+      params:
+        publish_target: topic.publish
+        exception_target: topic.exception
 ```
 
-### Multi-Tenant Setup
+Semantics worth knowing:
 
-```python
-from validation_engine import RuleRegistry, StrategyRegistry
+- **Clean entities are included** — entities that produced zero findings appear in `partition_decisions` with a publish action. Iterate the list to route every record.
+- **Collection-scope findings** affect the run-level decision but are *not* attached to any specific partition.
+- **Run-level rollup is worst-wins** — if any partition needs intervention, `result.decision.action` reflects that.
 
-# Create registries
-rule_registry = RuleRegistry()
-rule_registry.register("customer_type", "v1", [Rule1(), Rule2()])
-rule_registry.register("order_type", "v1", [Rule3(), Rule4()])
+## Decisions
 
-strategy_registry = StrategyRegistry()
-strategy_registry.register("standard", SeverityGateStrategy(...))
+`ValidationDecision.action` is one of:
 
-# Use with engine
-engine = ValidationEngine.from_registries(
-    rule_registry=rule_registry,
-    strategy_registry=strategy_registry,
-)
+- `PUBLISH` — clean, publish-allowed.
+- `PUBLISH_WITH_WARNINGS` — only warning-severity findings.
+- `QUARANTINE` — blocking findings, hold for review.
+- `ROUTE_TO_EXCEPTION` — blocking findings, hand off to an exception flow.
+- `HALT` — rule execution error; pipeline stop.
 
-# Validate different entity types
-decision1 = engine.validate(payload1, "customer_type", "v1", "standard")
-decision2 = engine.validate(payload2, "order_type", "v1", "standard")
-```
+Each decision exposes booleans (`publish_allowed`, `quarantine_required`,
+`exception_required`) so downstream code can branch without inspecting
+the action enum directly.
 
-## Testing
+## Findings vs Errors
 
-```bash
-python3 run_tests.py           # All tests
-python3 test_enhancements.py   # Feature tests
-python3 showcase_features.py   # Demo
-```
+- **`ValidationFinding`** — *data* quality observation (pass or fail).
+- **`ValidationError`** — *runtime* / *framework* failure: an
+  exception inside a rule, a configuration error, etc. Errors live on
+  `result.errors`. They never appear inside `result.findings`.
 
-## Next Steps
+Run-level `ValidationStatus`:
 
-- Read [ARCHITECTURE.md](ARCHITECTURE.md) for complete details
-- See [example_rules.py](example_rules.py) for full examples
-- Check [TESTING.md](TESTING.md) for testing patterns
+- `passed` / `passed_with_warnings` — `result.decision.publish_allowed == True`
+- `failed` — at least one blocking finding
+- `error` — at least one execution error

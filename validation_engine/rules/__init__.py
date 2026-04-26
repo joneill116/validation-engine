@@ -1,3 +1,6 @@
-from .base import Rule, make_finding
+"""Rule authoring API."""
+from .base import Rule
+from .configured import ConfiguredRule
+from .standard import STANDARD_RULES
 
-__all__ = ["Rule", "make_finding"]
+__all__ = ["Rule", "ConfiguredRule", "STANDARD_RULES"]

@@ -1,11 +1,13 @@
-from .base import PublishStrategy
+"""Decision strategies."""
+from .base import PerPartitionStrategy, PublishStrategy
+from .partitioned import PartitionBy, PartitionedStrategy, PartitionFn
 from .severity_gate import SeverityGateStrategy
-from .field_partition import FieldPartitionStrategy
-from .strict import StrictStrategy
 
 __all__ = [
     "PublishStrategy",
+    "PerPartitionStrategy",
     "SeverityGateStrategy",
-    "FieldPartitionStrategy",
-    "StrictStrategy",
+    "PartitionedStrategy",
+    "PartitionBy",
+    "PartitionFn",
 ]

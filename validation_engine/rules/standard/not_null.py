@@ -8,6 +8,7 @@ from typing import Any
 from ...core.context import EvaluationContext
 from ...models.enums import Category, Scope
 from ...models.finding import ValidationFinding
+from ...models import finding_codes
 from ..configured import ConfiguredRule
 
 
@@ -25,6 +26,7 @@ def _is_blank(value: Any, allow_empty: bool) -> bool:
 
 class NotNullRule(ConfiguredRule):
     rule_type = "not_null"
+    finding_code = finding_codes.REQUIRED_FIELD_MISSING
 
     def __init__(self, rule_id: str, **kwargs) -> None:
         kwargs.setdefault("scope", Scope.FIELD)

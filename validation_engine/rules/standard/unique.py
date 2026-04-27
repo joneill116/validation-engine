@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from ...core.context import EvaluationContext
 from ...models.enums import Category, Scope
 from ...models.finding import ValidationFinding
+from ...models import finding_codes
 from ..configured import ConfiguredRule
 from ._helpers import extract_field
 
@@ -30,6 +31,7 @@ def _ref_id(entity: Any) -> str | None:
 
 class UniqueRule(ConfiguredRule):
     rule_type = "unique"
+    finding_code = finding_codes.DUPLICATE_KEY
 
     def __init__(self, rule_id: str, **kwargs) -> None:
         kwargs.setdefault("scope", Scope.COLLECTION)

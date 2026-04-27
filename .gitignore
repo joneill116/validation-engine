@@ -26,9 +26,10 @@ venv/
 ENV/
 env/
 
-# IDEs
+# IDEs / agent local state
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~

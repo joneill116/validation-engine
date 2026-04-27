@@ -1,0 +1,61 @@
+ruleset_id: accounting_position_rules
+ruleset_version: v1
+entity_type: accounting_position
+description: |
+  Daily accounting-position validation. Domain-neutral: the engine doesn't
+  know what an account is — these rule_ids and field paths are caller-chosen.
+
+strategy:
+  strategy_type: severity_gate
+  params:
+    publish_target: topic.publish
+    exception_target: topic.exception
+
+reference_data:
+  - name: iso_currencies
+    inline:
+      - USD
+      - GBP
+      - EUR
+      - JPY
+
+rule_groups:
+  - group_id: structural
+    default_severity: blocking
+    default_category: structural
+    rules:
+      - rule_id: account_id.required
+        rule_type: required
+        field_path: account_id
+
+      - rule_id: market_value.required
+        rule_type: required
+        field_path: market_value
+
+      - rule_id: market_value.type
+        rule_type: type_check
+        field_path: market_value
+        params:
+          expected_type: decimal
+
+  - group_id: referential
+    default_severity: blocking
+    default_category: referential
+    rules:
+      - rule_id: currency.allowed
+        rule_type: enum
+        field_path: currency
+        params:
+          values: [USD, GBP, EUR, JPY]
+
+  - group_id: reconciliation
+    default_severity: blocking
+    default_category: reconciliation
+    rules:
+      - rule_id: market_value.control_total
+        rule_type: sum_equals
+        scope: collection
+        params:
+          amount_field: market_value
+          expected_value: "1000000.00"
+          tolerance: "0.01"

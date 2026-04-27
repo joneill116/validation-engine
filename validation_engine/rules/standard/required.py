@@ -11,11 +11,13 @@ from typing import Any
 from ...core.context import EvaluationContext
 from ...models.enums import Category, Scope
 from ...models.finding import ValidationFinding
+from ...models import finding_codes
 from ..configured import ConfiguredRule
 
 
 class RequiredRule(ConfiguredRule):
     rule_type = "required"
+    finding_code = finding_codes.REQUIRED_FIELD_MISSING
 
     def __init__(self, rule_id: str, **kwargs) -> None:
         kwargs.setdefault("scope", Scope.ENTITY)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Callable, Type
 
+from ..models.enums import Category, Severity
 from ..rules.base import Rule
 from ..rules.standard import STANDARD_RULES
 from .schema import RuleConfig
@@ -75,14 +76,21 @@ class RuleFactory:
 
     @staticmethod
     def _kwargs_from_config(cfg: RuleConfig) -> dict:
+        # Resolve the loader's "not specified" sentinels (None) to the
+        # documented defaults so the runtime Rule always carries a real
+        # Severity/Category. ``None`` only flows through the schema layer
+        # so group defaults can tell explicit-vs-defaulted apart.
         kwargs: dict = {
             "params": dict(cfg.params),
-            "severity": cfg.severity,
-            "category": cfg.category,
+            "severity": cfg.severity if cfg.severity is not None else Severity.BLOCKING,
+            "category": cfg.category if cfg.category is not None else Category.STRUCTURAL,
             "field_path": cfg.field_path,
             "applies_to": set(cfg.applies_to),
             "rule_version": cfg.rule_version,
             "message": cfg.message,
+            "applies_when": cfg.applies_when,
+            "depends_on": cfg.depends_on,
+            "group_id": cfg.group_id,
         }
         if cfg.scope is not None:
             kwargs["scope"] = cfg.scope

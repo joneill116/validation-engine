@@ -16,6 +16,9 @@ from .decision import ValidationDecision
 from .enums import ValidationStatus
 from .error import ValidationError
 from .finding import ValidationFinding
+from .manifest import ValidationManifest
+from .observation import Observation
+from .outcome import ValidationOutcome
 from .partition_decision import PartitionDecision
 from .rule_result import RuleResult
 from .summary import ValidationSummary
@@ -56,6 +59,12 @@ class ValidationResult:
     rule_results: tuple[RuleResult, ...] = field(default_factory=tuple)
     errors: tuple[ValidationError, ...] = field(default_factory=tuple)
     partition_decisions: tuple[PartitionDecision, ...] = field(default_factory=tuple)
+    observations: tuple[Observation, ...] = field(default_factory=tuple)
+    # ``outcome`` is the validation-only verdict (introduced alongside the
+    # operational ``decision``). Optional during the transition so older
+    # callers / tests that build ValidationResult by hand continue to work.
+    outcome: ValidationOutcome | None = None
+    manifest: ValidationManifest | None = None
     started_at: datetime = field(default_factory=_utc_now)
     completed_at: datetime = field(default_factory=_utc_now)
     duration_ms: float = 0.0
@@ -64,6 +73,8 @@ class ValidationResult:
     def __post_init__(self) -> None:
         if not isinstance(self.metadata, MappingProxyType):
             object.__setattr__(self, "metadata", freeze(self.metadata))
+        if not isinstance(self.observations, tuple):
+            object.__setattr__(self, "observations", tuple(self.observations))
 
     def failed_findings(self) -> tuple[ValidationFinding, ...]:
         """Convenience filter — used by reporting and exception flows."""

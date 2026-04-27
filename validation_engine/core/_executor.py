@@ -4,6 +4,14 @@ Rule execution mechanics.
 Pure module-level helpers that take a ``Rule`` plus its inputs and produce
 a ``RuleResult``. Kept separate from the engine class so the orchestration
 (in ``engine.py``) reads at one level of abstraction.
+
+Two rule API styles are supported:
+
+  - Legacy positional: ``evaluate(self, target, ctx) -> Finding | Iterable[Finding]``
+  - Context-only:      ``evaluate(self, ctx) -> RuleEvaluation``
+
+The executor inspects the rule class once to decide which form to call,
+then normalizes the return value to ``(findings, observations, status)``.
 """
 from __future__ import annotations
 
@@ -13,10 +21,13 @@ from dataclasses import replace
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
-from ..models.enums import RuleExecutionStatus, Scope
+from ..models.enums import RuleEvaluationStatus, RuleExecutionStatus, Scope
 from ..models.error import ValidationError
 from ..models.finding import ValidationFinding
+from ..models.observation import Observation
+from ..models.rule_evaluation import RuleEvaluation
 from ..models.rule_result import RuleResult
+from ..models.target import ValidationTarget
 from ..rules.base import Rule
 from .context import EvaluationContext
 
@@ -37,12 +48,14 @@ def rule_applies(rule: Rule, entity_type: str) -> bool:
     return "*" in applies_to or entity_type in applies_to
 
 
-def skipped_result(rule: Rule) -> RuleResult:
+def skipped_result(rule: Rule, *, skip_reason: str | None = None) -> RuleResult:
     return RuleResult(
         rule_id=rule.rule_id,
         rule_version=rule.rule_version,
         status=RuleExecutionStatus.SKIPPED,
         scope=rule.scope,
+        group_id=getattr(rule, "group_id", None),
+        skip_reason=skip_reason,
     )
 
 
@@ -70,30 +83,49 @@ def _targets_for_scope(rule, entities, ctx):
 
 def _collection_targets(rule, entities, ctx):
     target = copy.deepcopy(entities)
+    # Collection rules don't have a single entity to predicate on. By
+    # convention, ``applies_when`` is ignored at this scope (callers can
+    # write a Python rule if they need a collection-level predicate).
     yield (
         target,
-        ctx.scoped(rule_id=rule.rule_id),
+        ctx.scoped(
+            rule_id=rule.rule_id,
+            target=ValidationTarget.collection(),
+        ),
         None,
         None,
         {"entities": len(entities)},
+        True,  # applies_now
     )
 
 
 def _entity_targets(rule, entities, ctx):
+    applies_when = getattr(rule, "applies_when", None)
     for entity in entities:
         entity_ref = entity.get("entity_ref", {}) or {}
+        fields = entity.get("fields", {}) if isinstance(entity, dict) else {}
+        applies_now = True
+        if applies_when is not None and not applies_when.is_unconditional:
+            applies_now = applies_when.evaluate(fields)
         entity_copy = copy.deepcopy(entity)
         yield (
             entity_copy,
-            ctx.scoped(rule_id=rule.rule_id, entity=entity_copy),
+            ctx.scoped(
+                rule_id=rule.rule_id,
+                entity=entity_copy,
+                entity_ref=entity_ref,
+                target=ValidationTarget.entity(),
+            ),
             entity_ref,
             None,
             {"entity_ref": dict(entity_ref)},
+            applies_now,
         )
 
 
 def _field_targets(rule, entities, ctx):
     target_field = rule.field_path
+    applies_when = getattr(rule, "applies_when", None)
     for entity in entities:
         raw_fields = entity.get("fields", {}) if isinstance(entity, dict) else {}
         # Skip entities the rule doesn't apply to *before* paying for deepcopy.
@@ -102,6 +134,10 @@ def _field_targets(rule, entities, ctx):
                 continue
         elif target_field not in raw_fields:
             continue
+
+        applies_now = True
+        if applies_when is not None and not applies_when.is_unconditional:
+            applies_now = applies_when.evaluate(raw_fields)
 
         entity_ref = entity.get("entity_ref", {}) or {}
         entity_copy = copy.deepcopy(entity)
@@ -114,10 +150,18 @@ def _field_targets(rule, entities, ctx):
             value = raw["value"] if isinstance(raw, dict) and "value" in raw else raw
             yield (
                 value,
-                ctx.scoped(rule_id=rule.rule_id, entity=entity_copy, field_path=fpath),
+                ctx.scoped(
+                    rule_id=rule.rule_id,
+                    entity=entity_copy,
+                    field_path=fpath,
+                    field_value=value,
+                    entity_ref=entity_ref,
+                    target=ValidationTarget.field(fpath),
+                ),
                 entity_ref,
                 fpath,
                 {"field_path": fpath, "entity_ref": dict(entity_ref)},
+                applies_now,
             )
 
 
@@ -128,12 +172,25 @@ def _field_targets(rule, entities, ctx):
 def _run(rule, target_iter, errors):
     """Drive one rule through a stream of targets, producing one RuleResult."""
     findings: list[ValidationFinding] = []
+    observations: list[Observation] = []
     evaluated = passed = failed = 0
+    not_applicable_count = 0
+    total_targets = 0
+    takes_target = type(rule)._evaluate_takes_target()
     t0 = time.perf_counter()
-    for target, scoped_ctx, entity_ref, field_path, error_context in target_iter:
+    for target, scoped_ctx, entity_ref, field_path, error_context, applies_now in target_iter:
+        total_targets += 1
+        if not applies_now:
+            # The rule's applies_when predicate evaluated false for this
+            # specific target. Don't run the rule body — record a
+            # not-applicable hit so the per-rule status can promote to
+            # NOT_APPLICABLE if every target evaluated this way.
+            not_applicable_count += 1
+            continue
         try:
-            rule_findings = _coerce_findings(
-                rule.evaluate(target, scoped_ctx), rule, entity_ref, field_path,
+            rv = rule.evaluate(target, scoped_ctx) if takes_target else rule.evaluate(scoped_ctx)
+            rule_findings, rule_observations, na = _normalize_return(
+                rv, rule, entity_ref, field_path,
             )
         except Exception as exc:
             err = ValidationError.from_exception(
@@ -145,8 +202,12 @@ def _run(rule, target_iter, errors):
             errors.append(err)
             return _build_result(
                 rule, RuleExecutionStatus.ERROR,
-                findings, evaluated, passed, failed, t0, error=err,
+                findings, observations, evaluated, passed, failed, t0, error=err,
             )
+        observations.extend(rule_observations)
+        if na:
+            not_applicable_count += 1
+            continue
         for finding in rule_findings:
             findings.append(finding)
             evaluated += 1
@@ -154,14 +215,21 @@ def _run(rule, target_iter, errors):
                 passed += 1
             else:
                 failed += 1
+    if total_targets > 0 and not_applicable_count == total_targets and evaluated == 0:
+        # Every target reported NOT_APPLICABLE — surface that at the rule level.
+        return _build_result(
+            rule, RuleExecutionStatus.NOT_APPLICABLE,
+            findings, observations, evaluated, passed, failed, t0,
+        )
     status = RuleExecutionStatus.PASSED if failed == 0 else RuleExecutionStatus.FAILED
-    return _build_result(rule, status, findings, evaluated, passed, failed, t0)
+    return _build_result(rule, status, findings, observations, evaluated, passed, failed, t0)
 
 
 def _build_result(
     rule: Rule,
     status: RuleExecutionStatus,
     findings: list[ValidationFinding],
+    observations: list[Observation],
     evaluated: int,
     passed: int,
     failed: int,
@@ -175,29 +243,40 @@ def _build_result(
         status=status,
         scope=rule.scope,
         findings=tuple(findings),
+        observations=tuple(observations),
         evaluated_count=evaluated,
         passed_count=passed,
         failed_count=failed,
         duration_ms=_elapsed(t0),
         error=error,
+        group_id=getattr(rule, "group_id", None),
     )
 
 
-def _coerce_findings(
+def _normalize_return(
     rv: Any,
     rule: Rule,
     entity_ref: Mapping[str, Any] | None,
     field_path: str | None,
-) -> list[ValidationFinding]:
+) -> tuple[list[ValidationFinding], list[Observation], bool]:
     """
-    Normalize a rule's return value to ``list[ValidationFinding]``.
+    Normalize a rule's return value to ``(findings, observations, na_flag)``.
 
-    Raises ``TypeError`` if the rule returned anything other than ``None``,
-    a single ``ValidationFinding``, or an iterable of ``ValidationFinding``.
-    Surfacing rule-author bugs is preferable to silently dropping output.
+    Accepted shapes:
+      - ``None``                         -> no findings
+      - a single ``ValidationFinding``   -> [that finding]
+      - an iterable of ``ValidationFinding``
+      - a ``RuleEvaluation``             -> (findings, observations, na)
+
+    Anything else raises ``TypeError`` so rule-author bugs surface.
     """
     if rv is None:
-        return []
+        return [], [], False
+    if isinstance(rv, RuleEvaluation):
+        if rv.status is RuleEvaluationStatus.NOT_APPLICABLE:
+            return [], list(rv.observations), True
+        findings = _stamp_default_context(list(rv.findings), entity_ref, field_path)
+        return findings, list(rv.observations), False
     if isinstance(rv, ValidationFinding):
         candidates: list[ValidationFinding] = [rv]
     elif isinstance(rv, (str, bytes)) or not isinstance(rv, Iterable):
@@ -212,8 +291,17 @@ def _coerce_findings(
                     f"Rule {rule.rule_id!r} returned a non-Finding item: "
                     f"{type(item).__name__}"
                 )
+    return _stamp_default_context(candidates, entity_ref, field_path), [], False
+
+
+def _stamp_default_context(
+    findings: list[ValidationFinding],
+    entity_ref: Mapping[str, Any] | None,
+    field_path: str | None,
+) -> list[ValidationFinding]:
+    """Fill in entity_ref / field_path on findings that don't carry them."""
     out: list[ValidationFinding] = []
-    for f in candidates:
+    for f in findings:
         updates: dict[str, Any] = {}
         if entity_ref and not f.entity_ref:
             updates["entity_ref"] = MappingProxyType(dict(entity_ref))

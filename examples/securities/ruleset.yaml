@@ -1,0 +1,69 @@
+ruleset_id: securities_master_rules
+ruleset_version: v1
+entity_type: security
+description: |
+  Securities-master record validation. The ruleset uses ``applies_when``
+  to scope bond-specific rules to bond instruments — rules attached to
+  unrelated instrument types report NOT_APPLICABLE rather than failing.
+
+strategy:
+  strategy_type: severity_gate
+  params:
+    publish_target: topic.publish
+    exception_target: topic.exception
+
+rule_groups:
+  - group_id: structural
+    default_severity: blocking
+    default_category: structural
+    rules:
+      - rule_id: instrument_type.required
+        rule_type: required
+        field_path: instrument_type
+
+      - rule_id: ccy.format
+        rule_type: regex
+        field_path: ccy
+        params:
+          pattern: "^[A-Z]{3}$"
+
+  - group_id: bond_completeness
+    default_severity: blocking
+    default_category: completeness
+    rules:
+      - rule_id: bond.maturity_date.required
+        rule_type: not_null
+        field_path: maturity_date
+        applies_when:
+          predicates:
+            - field_path: instrument_type
+              operator: equals
+              value: bond
+
+      - rule_id: bond.coupon_rate.required
+        rule_type: not_null
+        field_path: coupon_rate
+        applies_when:
+          predicates:
+            - field_path: instrument_type
+              operator: equals
+              value: bond
+
+  - group_id: bond_consistency
+    default_severity: blocking
+    default_category: consistency
+    rules:
+      - rule_id: bond.maturity_after_issue
+        rule_type: comparison
+        scope: entity
+        applies_when:
+          predicates:
+            - field_path: instrument_type
+              operator: equals
+              value: bond
+        depends_on:
+          - rule_id: bond.maturity_date.required
+        params:
+          left: maturity_date
+          operator: gte
+          right: issue_date

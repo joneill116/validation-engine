@@ -63,6 +63,7 @@ class RulesetCompiler:
     def compile(self, cfg: RulesetConfig) -> CompiledRuleset:
         enabled_rules = [r for r in cfg.rules if r.enabled]
         _check_duplicate_rule_ids(enabled_rules)
+        _validate_dependency_graph(enabled_rules)
         rules = tuple(self._factory.build(r) for r in enabled_rules)
         strategy = self._strategy_builder(cfg.strategy)
         reference_data = self._load_reference_data(cfg)
@@ -78,10 +79,15 @@ class RulesetCompiler:
     # ------------------------------------------------------------------
 
     def _load_reference_data(self, cfg: RulesetConfig) -> dict[str, Any]:
+        from collections.abc import Mapping as _Mapping  # local to keep top imports tidy
         out: dict[str, Any] = {}
         for ref in cfg.reference_data:
             if ref.inline is not None:
-                out[ref.name] = dict(ref.inline)
+                # Accept any shape — the engine treats reference data as
+                # opaque values keyed by ``name``. Mappings get dict-copied
+                # to detach from the config object; everything else is
+                # stored as-is.
+                out[ref.name] = dict(ref.inline) if isinstance(ref.inline, _Mapping) else ref.inline
                 continue
             if not ref.path:
                 raise ValueError(
@@ -113,6 +119,45 @@ def _check_duplicate_rule_ids(rules) -> None:
             f"Duplicate rule_id(s) in ruleset: {sorted(duplicates)!r}. "
             f"Rule ids must be unique within a ruleset for traceable findings."
         )
+
+
+def _validate_dependency_graph(rules) -> None:
+    """
+    Validate ``depends_on`` references at compile time.
+
+    Catches two authoring mistakes:
+      - reference to a rule_id that doesn't exist (typo / missing rule)
+      - dependency cycles (rule A -> B -> A would deadlock the engine)
+    """
+    rule_ids = {r.rule_id for r in rules}
+    # 1. Missing references.
+    for r in rules:
+        for dep in r.depends_on:
+            if dep.rule_id not in rule_ids:
+                raise ValueError(
+                    f"Rule {r.rule_id!r} depends on unknown rule {dep.rule_id!r}. "
+                    f"Available rule_ids: {sorted(rule_ids)!r}"
+                )
+    # 2. Cycles via DFS with recursion stack.
+    graph: dict[str, list[str]] = {r.rule_id: [d.rule_id for d in r.depends_on] for r in rules}
+    WHITE, GREY, BLACK = 0, 1, 2
+    colour: dict[str, int] = {rid: WHITE for rid in graph}
+
+    def visit(node: str, path: list[str]) -> None:
+        colour[node] = GREY
+        for neighbour in graph.get(node, []):
+            if colour[neighbour] == GREY:
+                cycle = path[path.index(neighbour):] + [neighbour]
+                raise ValueError(
+                    f"Dependency cycle detected: {' -> '.join(cycle)}"
+                )
+            if colour[neighbour] == WHITE:
+                visit(neighbour, path + [neighbour])
+        colour[node] = BLACK
+
+    for node in graph:
+        if colour[node] == WHITE:
+            visit(node, [node])
 
 
 def _read_data_file(path: Path) -> Any:

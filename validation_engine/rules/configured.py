@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
+from ..models.applicability import RuleApplicability
+from ..models.dependency import RuleDependency
 from ..models.enums import Category, Scope, Severity
 from .base import Rule
 
@@ -31,6 +33,9 @@ class ConfiguredRule(Rule):
         applies_to: Iterable[str] | None = None,
         rule_version: str = "1.0",
         message: str | None = None,
+        applies_when: RuleApplicability | None = None,
+        depends_on: Iterable[RuleDependency] = (),
+        group_id: str | None = None,
     ) -> None:
         self.rule_id = rule_id
         self.rule_version = rule_version
@@ -41,6 +46,9 @@ class ConfiguredRule(Rule):
         self.applies_to = _to_frozenset(applies_to)
         self.params: dict[str, Any] = dict(params or {})
         self._message_override = message
+        self.applies_when = applies_when or RuleApplicability()
+        self.depends_on = tuple(depends_on)
+        self.group_id = group_id
 
     def _message(self, default: str) -> str:
         return self._message_override or default

@@ -18,12 +18,14 @@ from typing import Any
 from ...core.context import EvaluationContext
 from ...models.enums import Category, Scope
 from ...models.finding import ValidationFinding
+from ...models import finding_codes
 from ..configured import ConfiguredRule
 from ._helpers import extract_field
 
 
 class ConditionalRequiredRule(ConfiguredRule):
     rule_type = "conditional_required"
+    finding_code = finding_codes.CONDITIONAL_REQUIRED_FIELD_MISSING
 
     def __init__(self, rule_id: str, **kwargs) -> None:
         kwargs.setdefault("scope", Scope.ENTITY)

@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..models.decision import ValidationDecision
-from ..models.enums import Severity
+from ..models.enums import BLOCKING_SEVERITIES, Severity
 from ..models.error import ValidationError
 from ..models.finding import ValidationFinding
 from ..models.summary import ValidationSummary
@@ -76,7 +76,7 @@ class SeverityGateStrategy:
         findings = tuple(findings)
         blocking = [
             f for f in findings
-            if not f.passed and f.severity in (Severity.BLOCKING, Severity.FATAL)
+            if not f.passed and f.severity in BLOCKING_SEVERITIES
         ]
         if blocking:
             triggered_by = _ordered_unique(f.rule_id for f in blocking)

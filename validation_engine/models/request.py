@@ -3,13 +3,17 @@ ValidationRequest — the replayable input envelope for a validation run.
 """
 from __future__ import annotations
 
+import copy
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Mapping
 
 from ._immutable import freeze
+from .contract_snapshot import ContractSnapshot
+from .profile import ValidationProfile
+from .reference_data import ReferenceDataSnapshot
 
 
 def _utc_now() -> datetime:
@@ -47,6 +51,17 @@ class ValidationRequest:
     as_of_time: datetime = field(default_factory=_utc_now)
     as_at_time: datetime = field(default_factory=_utc_now)
     metadata: MappingProxyType = field(default_factory=lambda: MappingProxyType({}))
+    # Optional snapshots — strictly inputs to the run, never owned by
+    # the engine. The engine hashes them into the manifest if present.
+    contract_snapshot: ContractSnapshot | None = None
+    reference_data_snapshots: Mapping[str, ReferenceDataSnapshot] = field(
+        default_factory=dict,
+    )
+    # Optional profile binding the run to a ValidationProfile. The
+    # engine consults the profile for required reference data names,
+    # threshold policies, and expected contract identity. Profiles are
+    # purely declarative — they do not affect strategy/decision routing.
+    profile: ValidationProfile | None = None
 
     def __post_init__(self) -> None:
         # Validate required fields before paying for normalization.
@@ -54,7 +69,21 @@ class ValidationRequest:
             raise ValueError("ValidationRequest.entity_type is required")
         if not self.ruleset_id:
             raise ValueError("ValidationRequest.ruleset_id is required")
+        # Deep-copy so callers can't mutate the request after construction
+        # (e.g. by appending to a shared `entities` list). The audit trail
+        # — and any hash computed from the payload — must be stable for the
+        # lifetime of the request. Only do the copy when we don't already
+        # own the dict.
         if not isinstance(self.payload, dict):
-            object.__setattr__(self, "payload", dict(self.payload))
+            object.__setattr__(self, "payload", copy.deepcopy(dict(self.payload)))
+        else:
+            object.__setattr__(self, "payload", copy.deepcopy(self.payload))
         if not isinstance(self.metadata, MappingProxyType):
             object.__setattr__(self, "metadata", freeze(self.metadata))
+        # Freeze reference_data_snapshots so iteration order and contents
+        # are stable for hashing.
+        if not isinstance(self.reference_data_snapshots, MappingProxyType):
+            object.__setattr__(
+                self, "reference_data_snapshots",
+                freeze(self.reference_data_snapshots),
+            )

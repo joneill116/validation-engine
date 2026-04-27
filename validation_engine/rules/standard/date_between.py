@@ -13,6 +13,7 @@ from typing import Any
 from ...core.context import EvaluationContext
 from ...models.enums import Category, Scope
 from ...models.finding import ValidationFinding
+from ...models import finding_codes
 from ..configured import ConfiguredRule
 
 
@@ -36,6 +37,7 @@ def _to_date(value: Any) -> date | None:
 
 class DateBetweenRule(ConfiguredRule):
     rule_type = "date_between"
+    finding_code = finding_codes.VALUE_OUT_OF_RANGE
 
     def __init__(self, rule_id: str, **kwargs) -> None:
         kwargs.setdefault("scope", Scope.FIELD)

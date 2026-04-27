@@ -51,9 +51,12 @@ from .core.engine import ValidationEngine, PayloadValidationError
 from .core.context import EvaluationContext
 
 # models — input/output contract
+from .models import finding_codes
 from .models.enums import (
+    BLOCKING_SEVERITIES,
     Category,
     DecisionAction,
+    RuleEvaluationStatus,
     RuleExecutionStatus,
     Scope,
     Severity,
@@ -61,6 +64,27 @@ from .models.enums import (
 )
 from .models.request import ValidationRequest
 from .models.finding import ValidationFinding
+from .models.observation import Observation
+from .models.outcome import ValidationOutcome
+from .models.profile import ValidationProfile
+from .models.target import ValidationTarget
+from .models.rule_evaluation import RuleEvaluation
+from .models.applicability import (
+    ApplicabilityPredicate,
+    PredicateOperator,
+    RuleApplicability,
+)
+from .models.dependency import DependencyMode, RuleDependency
+from .models.contract_snapshot import ContractFieldSnapshot, ContractSnapshot
+from .models.reference_data import ReferenceDataSnapshot
+from .models.threshold import (
+    ThresholdBand,
+    ThresholdMode,
+    ThresholdOperator,
+    ThresholdPolicy,
+)
+from .models.plan import PlannedRule, ValidationPlan
+from .models.manifest import ValidationManifest
 from .models.rule_result import RuleResult
 from .models.summary import ValidationSummary
 from .models.decision import ValidationDecision
@@ -92,7 +116,7 @@ from .config.compiler import CompiledRuleset, RulesetCompiler
 from .registries.rule_registry import RuleRegistry
 from .registries.strategy_registry import StrategyRegistry
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
     # core
@@ -100,21 +124,45 @@ __all__ = [
     "EvaluationContext",
     "PayloadValidationError",
     # enums
+    "BLOCKING_SEVERITIES",
     "Severity",
     "Scope",
     "Category",
     "ValidationStatus",
     "RuleExecutionStatus",
+    "RuleEvaluationStatus",
     "DecisionAction",
     # models
     "ValidationRequest",
     "ValidationFinding",
+    "Observation",
+    "ValidationTarget",
+    "ValidationOutcome",
+    "ValidationProfile",
     "RuleResult",
+    "RuleEvaluation",
+    "RuleApplicability",
+    "ApplicabilityPredicate",
+    "PredicateOperator",
+    "RuleDependency",
+    "DependencyMode",
+    "ContractSnapshot",
+    "ContractFieldSnapshot",
+    "ReferenceDataSnapshot",
+    "ThresholdPolicy",
+    "ThresholdBand",
+    "ThresholdMode",
+    "ThresholdOperator",
+    "ValidationPlan",
+    "PlannedRule",
+    "ValidationManifest",
     "ValidationSummary",
     "ValidationDecision",
     "PartitionDecision",
     "ValidationError",
     "ValidationResult",
+    # vocab
+    "finding_codes",
     # rules
     "Rule",
     "ConfiguredRule",

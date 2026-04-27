@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from .enums import RuleExecutionStatus, Scope
 from .error import ValidationError
 from .finding import ValidationFinding
+from .observation import Observation
 
 
 @dataclass(frozen=True)
@@ -40,8 +41,19 @@ class RuleResult:
     status: RuleExecutionStatus
     scope: Scope
     findings: tuple[ValidationFinding, ...] = field(default_factory=tuple)
+    observations: tuple[Observation, ...] = field(default_factory=tuple)
     evaluated_count: int = 0
     passed_count: int = 0
     failed_count: int = 0
     duration_ms: float = 0.0
     error: ValidationError | None = None
+    # Optional rule-group membership echoed from the originating rule —
+    # lets ValidationSummary aggregate failed findings by group_id.
+    group_id: str | None = None
+    skip_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.observations, tuple):
+            object.__setattr__(self, "observations", tuple(self.observations))
+        if not isinstance(self.findings, tuple):
+            object.__setattr__(self, "findings", tuple(self.findings))

@@ -43,6 +43,18 @@ class TestValidationRequest:
         with pytest.raises(TypeError):
             req.metadata["tenant"] = "xyz"  # type: ignore[index]
 
+    def test_payload_is_deep_copied_at_construction(self):
+        # Mutating the original input dict must not change request.payload.
+        # Audit replay depends on the request being a stable snapshot.
+        original = {"entities": [{"entity_ref": {"id": "e1"}, "fields": {"x": 1}}]}
+        req = ValidationRequest(
+            entity_type="record", ruleset_id="r1", payload=original,
+        )
+        original["entities"].append({"entity_ref": {"id": "e2"}, "fields": {"x": 2}})
+        original["entities"][0]["fields"]["x"] = 999
+        assert len(req.payload["entities"]) == 1
+        assert req.payload["entities"][0]["fields"]["x"] == 1
+
 
 class TestEngineAcceptsRequest:
     def test_validate_request_returns_validation_result(self):

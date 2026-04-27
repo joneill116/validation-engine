@@ -10,6 +10,7 @@ from typing import Any
 from ...core.context import EvaluationContext
 from ...models.enums import Category, Scope
 from ...models.finding import ValidationFinding
+from ...models import finding_codes
 from ..configured import ConfiguredRule
 from ._helpers import extract_field
 
@@ -25,6 +26,7 @@ _OPERATORS = {
 
 class ComparisonRule(ConfiguredRule):
     rule_type = "comparison"
+    finding_code = finding_codes.COMPARISON_FAILED
 
     def __init__(self, rule_id: str, **kwargs) -> None:
         kwargs.setdefault("scope", Scope.ENTITY)

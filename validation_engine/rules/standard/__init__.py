@@ -4,16 +4,19 @@ Standard configurable rule implementations.
 Each module exports one rule class registered against a ``rule_type``
 string used in YAML/JSON configs.
 """
-from .required import RequiredRule
-from .not_null import NotNullRule
-from .enum_rule import EnumRule
-from .range_rule import RangeRule
-from .regex_rule import RegexRule
 from .comparison import ComparisonRule
-from .date_between import DateBetweenRule
-from .unique import UniqueRule
+from .completeness_ratio import CompletenessRatioRule
 from .conditional_required import ConditionalRequiredRule
+from .date_between import DateBetweenRule
+from .enum_rule import EnumRule
+from .not_null import NotNullRule
+from .range_rule import RangeRule
+from .record_count import RecordCountRule
+from .regex_rule import RegexRule
+from .required import RequiredRule
 from .sum_equals import SumEqualsRule
+from .type_check import TypeCheckRule
+from .unique import UniqueRule
 
 # Registry mapping rule_type -> class
 STANDARD_RULES = {
@@ -27,6 +30,9 @@ STANDARD_RULES = {
     UniqueRule.rule_type: UniqueRule,
     ConditionalRequiredRule.rule_type: ConditionalRequiredRule,
     SumEqualsRule.rule_type: SumEqualsRule,
+    TypeCheckRule.rule_type: TypeCheckRule,
+    RecordCountRule.rule_type: RecordCountRule,
+    CompletenessRatioRule.rule_type: CompletenessRatioRule,
 }
 
 __all__ = [
@@ -40,5 +46,8 @@ __all__ = [
     "UniqueRule",
     "ConditionalRequiredRule",
     "SumEqualsRule",
+    "TypeCheckRule",
+    "RecordCountRule",
+    "CompletenessRatioRule",
     "STANDARD_RULES",
 ]
